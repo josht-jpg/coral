@@ -1,26 +1,29 @@
 use std::{
     collections::HashMap,
+    env,
     io::{self, BufRead, Read, Write},
     sync::Arc,
 };
 
-use anyhow::{anyhow, Result};
-use telnet::{Event, Telnet};
+use anyhow::Result;
 
 fn parse_url(url: &str) -> Result<Url> {
     // TODO: check that url starts with http:// or https://
 
     // TODO: clean up lol
-    let url = &url[(if url.starts_with("http://") {
-        "http://".len()
-    } else {
-        "https://".len()
-    })..];
+    // let url = &url[(if url.starts_with("http://") {
+    //     "http://".len()
+    // } else {
+    //     "https://".len()
+    // })..];
+
+    let (scheme, url) = url.split_once("://").unwrap();
     let first_slash_index = url.find('/').unwrap_or(url.len());
     let host = &url[..first_slash_index];
     let path = &url[first_slash_index..];
 
     Ok(Url {
+        scheme: scheme.try_into().unwrap(),
         host: host.to_owned(),
         path: path.to_owned(),
     })
@@ -37,6 +40,33 @@ fn show_body(body: &str) {
             print!("{}", c);
         }
     }
+}
+
+fn parse_response(response: &[u8]) -> (Headers, String) {
+    let response = String::from_utf8(response.to_vec()).unwrap();
+
+    let mut response_lines = response.split("\r\n");
+    let status_line = response_lines
+        .next()
+        .unwrap()
+        .split(' ')
+        .collect::<Vec<&str>>();
+    let (version, status, reason): (&str, &str, &str) =
+        (status_line[0], status_line[1], status_line[2]);
+
+    let mut headers = HashMap::new();
+    loop {
+        let line = &response_lines.next().unwrap();
+        if line.trim().is_empty() {
+            break;
+        }
+
+        let line = line.split(":").collect::<Vec<&str>>();
+        let (header, value) = (line[0], line[1]);
+        headers.insert(header.to_lowercase(), value.trim().to_owned());
+    }
+
+    (headers, response_lines.collect::<String>())
 }
 
 // TODO: lol big time duplication
@@ -78,48 +108,28 @@ fn https_request(url: &Url) -> (Headers, String) {
             client.process_new_packets().unwrap();
 
             let mut plaintext = Vec::new();
-            client.reader().read_to_end(&mut plaintext).unwrap();
-            // io::stdout().write(&plaintext).unwrap();
+            // TODO: clean up
+            if let Err(err) = client.reader().read_to_end(&mut plaintext) {
+                if client.wants_write() {
+                    client.write_tls(&mut socket).unwrap();
+                }
+                continue;
+            }
             response.extend(plaintext);
             if response.ends_with(b"</html>\n") {
                 break;
             }
         }
-    }
 
-    let response = String::from_utf8(response).unwrap();
-
-    let mut response_lines = response.split("\r\n");
-    let status_line = response_lines
-        .next()
-        .unwrap()
-        .split(' ')
-        .collect::<Vec<&str>>();
-    let (version, status, reason): (&str, &str, &str) =
-        (status_line[0], status_line[1], status_line[2]);
-
-    let mut headers = HashMap::new();
-    loop {
-        let line = &response_lines.next().unwrap();
-        if line.trim().is_empty() {
-            break;
+        if client.wants_write() {
+            client.write_tls(&mut socket).unwrap();
         }
-
-        let line = line.split(":").collect::<Vec<&str>>();
-        let (header, value) = (line[0], line[1]);
-        headers.insert(header.to_lowercase(), value.trim().to_owned());
     }
 
-    (headers, response_lines.collect::<String>())
+    parse_response(&response)
 }
 
-fn request(url: &Url) -> (Headers, String) {
-    let scheme = url.host.split("://").collect::<Vec<&str>>()[0];
-
-    if scheme == "https" {
-        return https_request(&url);
-    }
-
+fn http_request(url: &Url) -> (Headers, String) {
     let mut stream = std::net::TcpStream::connect((url.host.clone(), 80)).unwrap();
     stream
         .write(format!("GET {} HTTP/1.0\r\nHost: {}\r\n\r\n", url.path, url.host).as_bytes())
@@ -136,39 +146,46 @@ fn request(url: &Url) -> (Headers, String) {
         }
     }
 
-    let response = String::from_utf8(response).unwrap();
+    parse_response(&response)
+}
 
-    let mut response_lines = response.split("\r\n");
-    let status_line = response_lines
-        .next()
-        .unwrap()
-        .split(' ')
-        .collect::<Vec<&str>>();
-    let (version, status, reason): (&str, &str, &str) =
-        (status_line[0], status_line[1], status_line[2]);
+fn request(url: &Url) -> (Headers, String) {
+    println!("{:?}", url);
 
-    let mut headers = HashMap::new();
-    loop {
-        let line = &response_lines.next().unwrap();
-        if line.trim().is_empty() {
-            break;
-        }
-
-        let line = line.split(":").collect::<Vec<&str>>();
-        let (header, value) = (line[0], line[1]);
-        headers.insert(header.to_lowercase(), value.trim().to_owned());
+    match url.scheme {
+        Scheme::Http => http_request(&url),
+        Scheme::Https => https_request(&url),
     }
-
-    (headers, response_lines.collect::<String>())
 }
 
 fn main() {
-    let url = parse_url("https://example.org/index.html").unwrap();
+    let args: Vec<String> = env::args().collect();
+    let url = parse_url(&args[1]).unwrap();
     let (headers, body) = request(&url);
     show_body(&body);
 }
 
+#[derive(Debug)]
+enum Scheme {
+    Http,
+    Https,
+}
+
+impl TryFrom<&str> for Scheme {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "http" => Ok(Scheme::Http),
+            "https" => Ok(Scheme::Https),
+            _ => Err(anyhow::anyhow!("Unknown scheme")),
+        }
+    }
+}
+
+#[derive(Debug)]
 struct Url {
+    scheme: Scheme,
     host: String,
     path: String,
 }
