@@ -66,7 +66,8 @@ fn https_request(url: &Url) -> (Headers, String) {
 
     client
         .writer()
-        .write(format!("GET {} HTTP/1.0\r\nHost: {}\r\n\r\n", url.path, url.host).as_bytes());
+        .write(format!("GET {} HTTP/1.0\r\nHost: {}\r\n\r\n", url.path, url.host).as_bytes())
+        .unwrap();
 
     let mut response = Vec::new();
     loop {
@@ -85,17 +86,6 @@ fn https_request(url: &Url) -> (Headers, String) {
             }
         }
     }
-
-    // let mut reader = io::BufReader::new(&mut client);
-    // let mut response: Vec<u8> = Vec::new();
-    // loop {
-    //     let received: Vec<u8> = reader.fill_buf().unwrap().to_vec();
-    //     reader.consume(received.len());
-    //     response.extend(received);
-    //     if response.ends_with(b"</html>\n") {
-    //         break;
-    //     }
-    // }
 
     let response = String::from_utf8(response).unwrap();
 
