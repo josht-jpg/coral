@@ -10,20 +10,21 @@ use anyhow::Result;
 fn parse_url(url: &str) -> Result<Url> {
     // TODO: check that url starts with http:// or https://
 
-    // TODO: clean up lol
-    // let url = &url[(if url.starts_with("http://") {
-    //     "http://".len()
-    // } else {
-    //     "https://".len()
-    // })..];
-
     let (scheme, url) = url.split_once("://").unwrap();
     let first_slash_index = url.find('/').unwrap_or(url.len());
     let host = &url[..first_slash_index];
     let path = &url[first_slash_index..];
 
+    let (host, port) = if let Some((host, port)) = host.split_once(':') {
+        let port = port.parse::<u16>().ok();
+        (host, port)
+    } else {
+        (host, None)
+    };
+
     Ok(Url {
         scheme: scheme.try_into().unwrap(),
+        port,
         host: host.to_owned(),
         path: path.to_owned(),
     })
@@ -109,7 +110,7 @@ fn https_request(url: &Url) -> (Headers, String) {
 
             let mut plaintext = Vec::new();
             // TODO: clean up
-            if let Err(err) = client.reader().read_to_end(&mut plaintext) {
+            if let Err(_) = client.reader().read_to_end(&mut plaintext) {
                 if client.wants_write() {
                     client.write_tls(&mut socket).unwrap();
                 }
@@ -161,6 +162,9 @@ fn request(url: &Url) -> (Headers, String) {
 fn main() {
     let args: Vec<String> = env::args().collect();
     let url = parse_url(&args[1]).unwrap();
+
+    println!("{:?}", url);
+
     let (headers, body) = request(&url);
     show_body(&body);
 }
@@ -187,6 +191,7 @@ impl TryFrom<&str> for Scheme {
 struct Url {
     scheme: Scheme,
     host: String,
+    port: Option<u16>,
     path: String,
 }
 
